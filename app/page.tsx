@@ -39,8 +39,14 @@ let socket: Socket;
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  // UI State
+  const gameStateRef = useRef<GameState>("MENU");
   const [gameState, setGameState] = useState<GameState>("MENU");
+  
+  // Sync Ref with State
+  useEffect(() => {
+      gameStateRef.current = gameState;
+  }, [gameState]);
+
   const [roomCode, setRoomCode] = useState("");
   const [inputCode, setInputCode] = useState("");
   const [myId, setMyId] = useState("");
@@ -78,9 +84,31 @@ export default function Home() {
         });
 
         socket.on("updateState", (state: ServerState) => {
+            // 1. Update My Player Local State from Server (Authoritative traits only)
+            if (myPlayerRef.current) {
+                const meOnServer = state.players.find(p => p.id === socket.id);
+                if (meOnServer) {
+                    myPlayerRef.current.isIt = meOnServer.isIt;
+                    myPlayerRef.current.tagCooldown = meOnServer.tagCooldown;
+                    
+                    // Anti-Desync: Snap if too far
+                    if (Math.abs(meOnServer.x - myPlayerRef.current.x) > 200 || 
+                        Math.abs(meOnServer.y - myPlayerRef.current.y) > 200) {
+                         myPlayerRef.current.x = meOnServer.x;
+                         myPlayerRef.current.y = meOnServer.y;
+                    }
+                }
+            } else {
+                // First initialization
+                const me = state.players.find(p => p.id === socket.id);
+                if (me) {
+                    myPlayerRef.current = { ...me, isGrounded: false };
+                }
+            }
+
             serverStateRef.current = state;
             // If we receive state, we are technically playing or in lobby with live preview
-            if (gameState !== "PLAYING" && state.players.length > 0) {
+            if (gameStateRef.current !== "PLAYING" && state.players.length > 0) {
                  setGameState("PLAYING");
             }
         });
@@ -292,8 +320,9 @@ export default function Home() {
              <div className="bg-zinc-900/80 p-4 rounded-lg border border-zinc-800">
                  <p className="text-zinc-400 text-xs uppercase mb-1">Room Code</p>
                  <p className="text-3xl font-mono font-bold tracking-widest select-all">{roomCode}</p>
-                 <p className="text-xs text-zinc-500 mt-2">Waiting for players...</p>
-                 {gameState === "LOBBY" && <p className="text-xs text-yellow-500 mt-1">Need 2+ players to start</p>}
+                 
+                 {gameState === "LOBBY" && <p className="text-xs text-yellow-500 mt-2">Waiting for players...</p>}
+                 {gameState === "PLAYING" && <p className="text-xs text-green-500 mt-2 animate-pulse">GAME IN PROGRESS</p>}
              </div>
          </div>
       )}
