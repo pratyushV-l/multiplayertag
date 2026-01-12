@@ -1,65 +1,302 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import io, { Socket } from "socket.io-client";
+
+// --- Types ---
+type GameState = "MENU" | "LOBBY" | "PLAYING" | "GAMEOVER";
+
+interface Player {
+  id: string; // Socket ID
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  vx: number;
+  vy: number;
+  color: string;
+  isIt: boolean;
+  facingRight: boolean;
+  tagCooldown: number;
+  score: number;
+}
+
+interface Platform {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ServerState {
+  players: Player[];
+  platforms: Platform[];
+}
+
+let socket: Socket;
 
 export default function Home() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // UI State
+  const [gameState, setGameState] = useState<GameState>("MENU");
+  const [roomCode, setRoomCode] = useState("");
+  const [inputCode, setInputCode] = useState("");
+  const [myId, setMyId] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // Game Logic State (Refs for rendering)
+  const serverStateRef = useRef<ServerState>({ players: [], platforms: [] });
+  const keysRef = useRef<{ [key: string]: boolean }>({});
+  const animationFrameRef = useRef<number>(0);
+
+  // --- Socket Initialization ---
+  useEffect(() => {
+    // Only init once
+    /* // In Next.js dev mode specifically, we might duplicate connections on HMR.
+       // Ideally we put this outside component or use a singleton pattern.
+       // For this simple example, we'll just check if it exists.
+    */
+    const initSocket = async () => {
+        await fetch("/api/socket"); // Trigger Next.js API if we were using it, but we are using custom server
+        socket = io();
+
+        socket.on("connect", () => {
+            console.log("Connected:", socket.id);
+            setMyId(socket.id || "");
+        });
+
+        socket.on("roomCreated", (code) => {
+            setRoomCode(code);
+            setGameState("LOBBY");
+        });
+
+        socket.on("roomJoined", (code) => {
+            setRoomCode(code);
+            setGameState("LOBBY");
+        });
+
+        socket.on("updateState", (state: ServerState) => {
+            serverStateRef.current = state;
+            // If we receive state, we are technically playing or in lobby with live preview
+            if (gameState !== "PLAYING" && state.players.length > 0) {
+                 setGameState("PLAYING");
+            }
+        });
+
+        socket.on("error", (msg) => {
+            setErrorMsg(msg);
+            setTimeout(() => setErrorMsg(""), 3000);
+        });
+    };
+    
+    initSocket();
+
+    return () => {
+        if (socket) socket.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --- Input Handling ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "w", "a", "s", "d"].includes(e.key)) {
+         // e.preventDefault(); // Might block typing in input fields if not careful
+         if (gameState === "PLAYING") e.preventDefault();
+      }
+      keysRef.current[e.key] = true;
+      sendInput();
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysRef.current[e.key] = false;
+      sendInput();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [gameState, roomCode]);
+
+  const sendInput = () => {
+      if (!socket || !roomCode) return;
+      
+      const keys = keysRef.current;
+      const inputs = {
+          up: keys["w"] || keys["ArrowUp"],
+          down: keys["s"] || keys["ArrowDown"],
+          left: keys["a"] || keys["ArrowLeft"],
+          right: keys["d"] || keys["ArrowRight"],
+      };
+      
+      socket.emit("input", { code: roomCode, inputs });
+  };
+
+  // --- Render Loop ---
+  useEffect(() => {
+     const render = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // Resize
+        if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        const width = canvas.width;
+        const height = canvas.height;
+
+        ctx.clearRect(0, 0, width, height);
+
+        // Define a Camera/Scale? 
+        // For now, let's map the server coordinates (0-1200, 0-800) to the screen
+        // Center the view or scale to fit?
+        // Let's "Scale to Fit" for simplicity
+        const scaleX = width / 1200;
+        const scaleY = height / 800;
+        const scale = Math.min(scaleX, scaleY);
+        
+        const offsetX = (width - 1200 * scale) / 2;
+        const offsetY = (height - 800 * scale) / 2;
+        
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+
+        // Draw Background Area
+        ctx.fillStyle = "#1e1e20";
+        ctx.fillRect(0, 0, 1200, 800);
+
+        // Draw Platforms
+        const { platforms, players } = serverStateRef.current;
+        
+        platforms.forEach(plat => {
+            ctx.fillStyle = "#4b5563"; 
+            if (plat.y > 600) ctx.fillStyle = "#374151"; 
+            ctx.fillRect(plat.x, plat.y, plat.width, plat.height);
+            ctx.fillStyle = "rgba(0,0,0,0.2)";
+            ctx.fillRect(plat.x, plat.y + plat.height - 4, plat.width, 4);
+        });
+
+        // Draw Players
+        players.forEach(p => {
+            if (p.isIt) {
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = "#ef4444";
+                ctx.fillStyle = "#ef4444"; 
+            } else {
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = p.color;
+            }
+
+            ctx.fillRect(p.x, p.y, p.width, p.height);
+            
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = "white";
+            const eyeOffset = p.facingRight ? (p.width - 12) : 4;
+            ctx.fillRect(p.x + eyeOffset, p.y + 6, 8, 8);
+            
+            if (p.id === myId) {
+                // Indicator for "ME"
+                ctx.beginPath();
+                ctx.moveTo(p.x + p.width/2, p.y - 15);
+                ctx.lineTo(p.x + p.width/2 - 5, p.y - 25);
+                ctx.lineTo(p.x + p.width/2 + 5, p.y - 25);
+                ctx.fillStyle = "white";
+                ctx.fill();
+            }
+
+             if (p.isIt) {
+                ctx.fillStyle = "white";
+                ctx.font = "bold 12px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText("IT!", p.x + p.width/2, p.y - 10);
+            }
+        });
+
+        ctx.restore();
+        
+        animationFrameRef.current = requestAnimationFrame(render);
+     };
+
+     render();
+     return () => cancelAnimationFrame(animationFrameRef.current);
+  }, []);
+
+  // --- UI Handlers ---
+  const handleCreateGame = () => {
+    socket.emit("createRoom");
+  };
+
+  const handleJoinGame = () => {
+      if (inputCode.length === 4) {
+          socket.emit("joinRoom", inputCode.toUpperCase());
+      } else {
+          setErrorMsg("Code must be 4 characters");
+      }
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="relative w-full h-screen bg-black overflow-hidden text-zinc-100 font-sans select-none">
+      <canvas ref={canvasRef} className="block w-full h-full" />
+
+      {/* --- MENU UI --- */}
+      {gameState === "MENU" && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20">
+          <h1 className="text-6xl font-black mb-2 text-transparent bg-clip-text bg-gradient-to-br from-blue-500 to-purple-500">
+            TAG ONLINE
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+          <p className="text-zinc-500 mb-10">Play with friends anywhere</p>
+
+          <div className="flex flex-col gap-4 w-64">
+            <button 
+                onClick={handleCreateGame}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-lg font-bold transition shadow-lg shadow-blue-900/20"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+                Create Game
+            </button>
+            
+            <div className="flex gap-2">
+                <input 
+                    type="text" 
+                    value={inputCode}
+                    onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                    placeholder="CODE"
+                    maxLength={4}
+                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 text-center font-mono text-xl focus:outline-none focus:border-purple-500"
+                />
+                <button 
+                    onClick={handleJoinGame}
+                    className="px-6 bg-zinc-700 hover:bg-zinc-600 rounded-lg font-bold"
+                >
+                    Join
+                </button>
+            </div>
+            
+            {errorMsg && <p className="text-red-500 text-sm text-center">{errorMsg}</p>}
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      )}
+
+    {/* --- PLAYING/LOBBY UI --- */}
+      {(gameState === "LOBBY" || gameState === "PLAYING") && (
+         <div className="absolute top-4 left-4 z-10">
+             <div className="bg-zinc-900/80 p-4 rounded-lg border border-zinc-800">
+                 <p className="text-zinc-400 text-xs uppercase mb-1">Room Code</p>
+                 <p className="text-3xl font-mono font-bold tracking-widest select-all">{roomCode}</p>
+                 <p className="text-xs text-zinc-500 mt-2">Waiting for players...</p>
+                 {gameState === "LOBBY" && <p className="text-xs text-yellow-500 mt-1">Need 2+ players to start</p>}
+             </div>
+         </div>
+      )}
+    </main>
   );
 }
