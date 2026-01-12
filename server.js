@@ -98,77 +98,8 @@ class GameRoom {
     const playerArray = Array.from(this.players.values());
 
     playerArray.forEach(p => {
-      // 1. Controls
-      if (p.inputs.left) {
-        p.vx -= 0.8; 
-        p.facingRight = false;
-      }
-      if (p.inputs.right) {
-        p.vx += 0.8;
-        p.facingRight = true;
-      }
-      if (p.inputs.up && p.isGrounded) {
-         p.vy = JUMP_FORCE;
-         p.isGrounded = false;
-      }
-
-      // 2. Physics
-      p.vy += GRAVITY;
-      p.vx *= FRICTION; 
-
-      if (p.vx > MOVE_SPEED) p.vx = MOVE_SPEED;
-      if (p.vx < -MOVE_SPEED) p.vx = -MOVE_SPEED;
-            
-      p.x += p.vx;
-      p.y += p.vy;
-
-      // 3. Boundaries
-      if (p.x < 0) { p.x = 0; p.vx = 0; }
-      if (p.x + p.width > ROOM_WIDTH) { p.x = ROOM_WIDTH - p.width; p.vx = 0; }
+      // Server Only Handles Cooldowns and Tagging Validation
       
-      // 4. Collisions
-      p.isGrounded = false;
-      this.platforms.forEach((plat) => {
-        if (
-          p.x < plat.x + plat.width &&
-          p.x + p.width > plat.x &&
-          p.y < plat.y + plat.height &&
-          p.y + p.height > plat.y
-        ) {
-          const distL = (p.x + p.width) - plat.x;
-          const distR = (plat.x + plat.width) - p.x;
-          const distT = (p.y + p.height) - plat.y;
-          const distB = (plat.y + plat.height) - p.y;
-          
-          const min = Math.min(distL, distR, distT, distB);
-          
-          if (min === distT) {
-              if (p.vy >= 0) {
-                  p.y = plat.y - p.height;
-                  p.vy = 0;
-                  p.isGrounded = true;
-              }
-          } else if (min === distB) {
-               if (p.vy < 0) {
-                  p.y = plat.y + plat.height;
-                  p.vy = 0;
-               }
-          } else if (min === distL) {
-              p.x = plat.x - p.width;
-              p.vx = 0;
-          } else if (min === distR) {
-              p.x = plat.x + plat.width;
-              p.vx = 0;
-          }
-        }
-      });
-      
-      if (p.y > ROOM_HEIGHT) {
-        p.y = 0;
-        p.x = ROOM_WIDTH / 2;
-        p.vy = 0;
-      }
-
       // 5. Tag Logic
       playerArray.forEach((other) => {
         if (p.id === other.id) return;
@@ -185,11 +116,7 @@ class GameRoom {
                 p.isIt = false;
                 other.isIt = true;
                 
-                const dirX = Math.sign(other.x - p.x) || 1;
-                other.vx = dirX * 10;
-                other.vy = -5;
-                p.vx = -dirX * 5;
-
+                // Add impulse to separate them? Not on server anymore, client will handle fallback separator or just visual
                 p.tagCooldown = TAG_COOLDOWN_FRAMES;
                 other.tagCooldown = TAG_COOLDOWN_FRAMES;
             }
@@ -253,11 +180,20 @@ app.prepare().then(() => {
     });
 
     socket.on("input", ({ code, inputs }) => {
+       // Deprecated by "updatePlayer" for movement, but still good to keep connection alive or for verified actions
+    });
+
+    socket.on("updatePlayer", ({ code, data }) => {
        const room = rooms.get(code);
        if (room) {
            const player = room.players.get(socket.id);
            if (player) {
-               player.inputs = inputs;
+               // Update position blindly from client (Client Authority)
+               player.x = data.x;
+               player.y = data.y;
+               player.vx = data.vx;
+               player.vy = data.vy;
+               player.facingRight = data.facingRight;
            }
        }
     });
