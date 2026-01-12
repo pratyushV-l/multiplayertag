@@ -20,6 +20,7 @@ interface Player {
   facingRight: boolean;
   tagCooldown: number;
   score: number;
+  isGrounded?: boolean; // Client-side tracking
 }
 
 interface Platform {
@@ -33,6 +34,14 @@ interface ServerState {
   players: Player[];
   platforms: Platform[];
 }
+
+// CONSTANTS (Shared logic)
+const GRAVITY = 0.6;
+const JUMP_FORCE = -15;
+const MOVE_SPEED = 6;
+const FRICTION = 0.85;
+const ROOM_WIDTH = 1200;
+const ROOM_HEIGHT = 800;
 
 let socket: Socket;
 
@@ -54,6 +63,9 @@ export default function Home() {
 
   // Game Logic State (Refs for rendering)
   const serverStateRef = useRef<ServerState>({ players: [], platforms: [] });
+  // We keep a separate "Local Player" state that is ahead of the server
+  const myPlayerRef = useRef<Player | null>(null);
+
   const keysRef = useRef<{ [key: string]: boolean }>({});
   const animationFrameRef = useRef<number>(0);
 
