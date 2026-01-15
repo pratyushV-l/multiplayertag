@@ -10,7 +10,7 @@ interface Player {
   id: string; // Socket ID
   index: number;
   x: number;
-  y: number;
+  y: number; // Server/World Coordinates
   width: number;
   height: number;
   vx: number;
@@ -48,38 +48,30 @@ let socket: Socket;
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  const gameStateRef = useRef<GameState>("MENU");
+  // UI State
   const [gameState, setGameState] = useState<GameState>("MENU");
-  
-  // Sync Ref with State
-  useEffect(() => {
-      gameStateRef.current = gameState;
-  }, [gameState]);
-
   const [roomCode, setRoomCode] = useState("");
   const [inputCode, setInputCode] = useState("");
   const [myId, setMyId] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [playerCount, setPlayerCount] = useState(0);
 
-  // Game Logic State (Refs for rendering)
+  // Game Logic State
   const serverStateRef = useRef<ServerState>({ players: [], platforms: [] });
   // We keep a separate "Local Player" state that is ahead of the server
   const myPlayerRef = useRef<Player | null>(null);
-
+  
   const keysRef = useRef<{ [key: string]: boolean }>({});
   const animationFrameRef = useRef<number>(0);
 
   // --- Socket Initialization ---
   useEffect(() => {
-    // Only init once
-    /* // In Next.js dev mode specifically, we might duplicate connections on HMR.
-       // Ideally we put this outside component or use a singleton pattern.
-       // For this simple example, we'll just check if it exists.
-    */
     const initSocket = async () => {
-        await fetch("/api/socket"); // Trigger Next.js API if we were using it, but we are using custom server
-        socket = io();
+        // await fetch("/api/socket"); // Not needed for custom server
+        socket = io({
+             transports: ['websocket'], // Force websocket for better perf
+             reconnectionAttempts: 5
+        });
 
         socket.on("connect", () => {
             console.log("Connected:", socket.id);
@@ -101,14 +93,21 @@ export default function Home() {
         });
 
         socket.on("updateState", (state: ServerState) => {
-            // 1. Update My Player Local State from Server (Authoritative traits only)
+            setPlayerCount(state.players.length);
+
+            // Check if WE are "IT" according to server, update our local flag if so
+            // We ONLY take "IsIt" and "TagCooldown" from server for ourself
+            // For others, we take everything.
+            
             if (myPlayerRef.current) {
                 const meOnServer = state.players.find(p => p.id === socket.id);
                 if (meOnServer) {
                     myPlayerRef.current.isIt = meOnServer.isIt;
                     myPlayerRef.current.tagCooldown = meOnServer.tagCooldown;
+                    // We DO NOT overwrite x/y with server data to avoid rubberbanding
+                    // unless the deviation is huge? (Desync fix)
                     
-                    // Anti-Desync: Snap if too far
+                    // Simple desync check: if > 200px off, snap
                     if (Math.abs(meOnServer.x - myPlayerRef.current.x) > 200 || 
                         Math.abs(meOnServer.y - myPlayerRef.current.y) > 200) {
                          myPlayerRef.current.x = meOnServer.x;
@@ -116,15 +115,16 @@ export default function Home() {
                     }
                 }
             } else {
-                // First initialization
+                // Initialize my player if I exist in server state
                 const me = state.players.find(p => p.id === socket.id);
                 if (me) {
+                    // clone deeply to detach from ref updates
                     myPlayerRef.current = { ...me, isGrounded: false };
                 }
             }
 
+            // Store others
             serverStateRef.current = state;
-            setPlayerCount(state.players.length);
         });
 
         socket.on("error", (msg) => {
@@ -136,90 +136,175 @@ export default function Home() {
     initSocket();
 
     return () => {
-        if (socket) socket.disconnect();
+         // Prevent disconnecting in development to avoid Strict Mode issues
+         // If we disconnect here, the double-mount in Strict Mode kills the connection
+         // while the user might still be interacting or the second mount tries to use it.
+         if (socket) {
+             socket.off("connect");
+             socket.off("roomCreated");
+             socket.off("roomJoined");
+             socket.off("gameStarted");
+             socket.off("updateState");
+             socket.off("error");
+         }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Run once
 
   // --- Input Handling ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "w", "a", "s", "d"].includes(e.key)) {
-         // e.preventDefault(); // Might block typing in input fields if not careful
          if (gameState === "PLAYING") e.preventDefault();
       }
       keysRef.current[e.key] = true;
-      sendInput();
     };
-
     const handleKeyUp = (e: KeyboardEvent) => {
       keysRef.current[e.key] = false;
-      sendInput();
     };
-
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [gameState, roomCode]);
+  }, [gameState]);
 
-  const sendInput = () => {
-      if (!socket || !roomCode) return;
-      
-      const keys = keysRef.current;
-      const inputs = {
-          up: keys["w"] || keys["ArrowUp"],
-          down: keys["s"] || keys["ArrowDown"],
-          left: keys["a"] || keys["ArrowLeft"],
-          right: keys["d"] || keys["ArrowRight"],
-      };
-      
-      socket.emit("input", { code: roomCode, inputs });
-  };
 
-  // --- Render Loop ---
+  // --- Game Loop (Client Physics) ---
   useEffect(() => {
+     let lastUpdate = 0;
+
+     const updatePhysics = () => {
+        if (!myPlayerRef.current) return;
+        const p = myPlayerRef.current;
+        const keys = keysRef.current;
+        const platforms = serverStateRef.current.platforms;
+
+        // 1. Controls
+        if (keys["a"] || keys["ArrowLeft"]) {
+            p.vx -= 0.8;
+            p.facingRight = false;
+        }
+        if (keys["d"] || keys["ArrowRight"]) {
+            p.vx += 0.8;
+            p.facingRight = true;
+        }
+        if ((keys["w"] || keys["ArrowUp"]) && p.isGrounded) {
+             p.vy = JUMP_FORCE;
+             p.isGrounded = false;
+        }
+
+        // 2. Physics
+        p.vy += GRAVITY;
+        p.vx *= FRICTION; 
+        if (p.vx > MOVE_SPEED) p.vx = MOVE_SPEED;
+        if (p.vx < -MOVE_SPEED) p.vx = -MOVE_SPEED;
+        
+        p.x += p.vx;
+        p.y += p.vy;
+
+        // 3. Boundaries
+        if (p.x < 0) { p.x = 0; p.vx = 0; }
+        if (p.x + p.width > ROOM_WIDTH) { p.x = ROOM_WIDTH - p.width; p.vx = 0; }
+        
+        // 4. Collisions
+        p.isGrounded = false;
+        platforms.forEach((plat) => {
+            if (
+            p.x < plat.x + plat.width &&
+            p.x + p.width > plat.x &&
+            p.y < plat.y + plat.height &&
+            p.y + p.height > plat.y
+            ) {
+            const distL = (p.x + p.width) - plat.x;
+            const distR = (plat.x + plat.width) - p.x;
+            const distT = (p.y + p.height) - plat.y;
+            const distB = (plat.y + plat.height) - p.y;
+            
+            const min = Math.min(distL, distR, distT, distB);
+            
+            if (min === distT) {
+                if (p.vy >= 0) {
+                    p.y = plat.y - p.height;
+                    p.vy = 0;
+                    p.isGrounded = true;
+                }
+            } else if (min === distB) {
+                if (p.vy < 0) {
+                    p.y = plat.y + plat.height;
+                    p.vy = 0;
+                }
+            } else if (min === distL) {
+                p.x = plat.x - p.width;
+                p.vx = 0;
+            } else if (min === distR) {
+                p.x = plat.x + plat.width;
+                p.vx = 0;
+            }
+            }
+        });
+        
+        if (p.y > ROOM_HEIGHT) {
+            p.y = 0;
+            p.x = ROOM_WIDTH / 2;
+            p.vy = 0;
+        }
+    
+        // 5. Send Update to Server (throttled to 30hz or 60hz)
+        const now = Date.now();
+        if (now - lastUpdate > 15 && socket && roomCode) { 
+            lastUpdate = now;
+            socket.emit("updatePlayer", { 
+                code: roomCode, 
+                data: {
+                    x: Math.round(p.x), 
+                    y: Math.round(p.y), 
+                    vx: p.vx, 
+                    vy: p.vy, 
+                    facingRight: p.facingRight 
+                }
+            });
+        }
+     };
+
      const render = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
+        if (gameState === "PLAYING") {
+             updatePhysics();
+        }
+
         // Resize
         if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
         }
-
         const width = canvas.width;
         const height = canvas.height;
 
+        // Draw Map
         ctx.clearRect(0, 0, width, height);
 
-        // Define a Camera/Scale? 
-        // For now, let's map the server coordinates (0-1200, 0-800) to the screen
-        // Center the view or scale to fit?
-        // Let's "Scale to Fit" for simplicity
-        const scaleX = width / 1200;
-        const scaleY = height / 800;
+        const scaleX = width / ROOM_WIDTH;
+        const scaleY = height / ROOM_HEIGHT;
         const scale = Math.min(scaleX, scaleY);
-        
-        const offsetX = (width - 1200 * scale) / 2;
-        const offsetY = (height - 800 * scale) / 2;
+        const offsetX = (width - ROOM_WIDTH * scale) / 2;
+        const offsetY = (height - ROOM_HEIGHT * scale) / 2;
         
         ctx.save();
         ctx.translate(offsetX, offsetY);
         ctx.scale(scale, scale);
 
-        // Draw Background Area
+        // BG
         ctx.fillStyle = "#1e1e20";
-        ctx.fillRect(0, 0, 1200, 800);
+        ctx.fillRect(0, 0, ROOM_WIDTH, ROOM_HEIGHT);
 
-        // Draw Platforms
+        // Platforms
         const { platforms, players } = serverStateRef.current;
-        
         platforms.forEach(plat => {
             ctx.fillStyle = "#4b5563"; 
             if (plat.y > 600) ctx.fillStyle = "#374151"; 
@@ -228,39 +313,45 @@ export default function Home() {
             ctx.fillRect(plat.x, plat.y + plat.height - 4, plat.width, 4);
         });
 
-        // Draw Players
+        // Loop over server players
         players.forEach(p => {
-            if (p.isIt) {
+            // Is this me? If so, use my LOCAL state for rendering to be silky smooth
+            let renderP = p;
+            if (p.id === myId && myPlayerRef.current) {
+                renderP = myPlayerRef.current;
+            }
+
+            // Draw
+            if (renderP.isIt) {
                 ctx.shadowBlur = 15;
                 ctx.shadowColor = "#ef4444";
                 ctx.fillStyle = "#ef4444"; 
             } else {
                 ctx.shadowBlur = 0;
-                ctx.fillStyle = p.color;
+                ctx.fillStyle = renderP.color;
             }
 
-            ctx.fillRect(p.x, p.y, p.width, p.height);
+            ctx.fillRect(renderP.x, renderP.y, renderP.width, renderP.height);
             
             ctx.shadowBlur = 0;
             ctx.fillStyle = "white";
-            const eyeOffset = p.facingRight ? (p.width - 12) : 4;
-            ctx.fillRect(p.x + eyeOffset, p.y + 6, 8, 8);
+            const eyeOffset = renderP.facingRight ? (renderP.width - 12) : 4;
+            ctx.fillRect(renderP.x + eyeOffset, renderP.y + 6, 8, 8);
             
             if (p.id === myId) {
-                // Indicator for "ME"
                 ctx.beginPath();
-                ctx.moveTo(p.x + p.width/2, p.y - 15);
-                ctx.lineTo(p.x + p.width/2 - 5, p.y - 25);
-                ctx.lineTo(p.x + p.width/2 + 5, p.y - 25);
+                ctx.moveTo(renderP.x + renderP.width/2, renderP.y - 15);
+                ctx.lineTo(renderP.x + renderP.width/2 - 5, renderP.y - 25);
+                ctx.lineTo(renderP.x + renderP.width/2 + 5, renderP.y - 25);
                 ctx.fillStyle = "white";
                 ctx.fill();
             }
 
-             if (p.isIt) {
+             if (renderP.isIt) {
                 ctx.fillStyle = "white";
                 ctx.font = "bold 12px sans-serif";
                 ctx.textAlign = "center";
-                ctx.fillText("IT!", p.x + p.width/2, p.y - 10);
+                ctx.fillText("IT!", renderP.x + renderP.width/2, renderP.y - 10);
             }
         });
 
@@ -271,7 +362,7 @@ export default function Home() {
 
      render();
      return () => cancelAnimationFrame(animationFrameRef.current);
-  }, []);
+  }, [gameState, myId, roomCode]); // Re-bind if important IDs change
 
   // --- UI Handlers ---
   const handleCreateGame = () => {
@@ -287,9 +378,7 @@ export default function Home() {
   };
 
   const handleStartGame = () => {
-      if (socket && roomCode) {
-          socket.emit("startGame", roomCode);
-      }
+      socket.emit("startGame", roomCode);
   };
 
   return (
@@ -344,7 +433,7 @@ export default function Home() {
                  {gameState === "LOBBY" && (
                      <div className="mt-4">
                         <p className="text-zinc-300 mb-2">Players: {playerCount}/4</p>
-                        {playerCount >= 2 ? (
+                        {serverStateRef.current.players.length >= 2 ? (
                             <button 
                                 onClick={handleStartGame}
                                 className="w-full py-2 bg-green-600 hover:bg-green-500 rounded font-bold text-sm transition animate-pulse"

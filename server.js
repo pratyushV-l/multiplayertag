@@ -206,7 +206,11 @@ app.prepare().then(() => {
                player.vx = data.vx;
                player.vy = data.vy;
                player.facingRight = data.facingRight;
+           } else {
+               // console.log("Player not found in room", socket.id);
            }
+       } else {
+           // console.log("Room not found for update", code);
        }
     });
 
