@@ -342,9 +342,9 @@ export default function Home() {
                  <p className="text-3xl font-mono font-bold tracking-widest select-all">{roomCode}</p>
                  
                  {gameState === "LOBBY" && (
-                     <div className="mt-4">playerCount}/4</p>
-                        {playerCount-2">Players: {serverStateRef.current.players.length}/4</p>
-                        {serverStateRef.current.players.length >= 2 ? (
+                     <div className="mt-4">
+                        <p className="text-zinc-300 mb-2">Players: {playerCount}/4</p>
+                        {playerCount >= 2 ? (
                             <button 
                                 onClick={handleStartGame}
                                 className="w-full py-2 bg-green-600 hover:bg-green-500 rounded font-bold text-sm transition animate-pulse"
