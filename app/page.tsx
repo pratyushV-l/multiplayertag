@@ -95,6 +95,10 @@ export default function Home() {
             setGameState("LOBBY");
         });
 
+        socket.on("gameStarted", () => {
+             setGameState("PLAYING");
+        });
+
         socket.on("updateState", (state: ServerState) => {
             // 1. Update My Player Local State from Server (Authoritative traits only)
             if (myPlayerRef.current) {
@@ -119,10 +123,6 @@ export default function Home() {
             }
 
             serverStateRef.current = state;
-            // If we receive state, we are technically playing or in lobby with live preview
-            if (gameStateRef.current !== "PLAYING" && state.players.length > 0) {
-                 setGameState("PLAYING");
-            }
         });
 
         socket.on("error", (msg) => {
@@ -284,6 +284,12 @@ export default function Home() {
       }
   };
 
+  const handleStartGame = () => {
+      if (socket && roomCode) {
+          socket.emit("startGame", roomCode);
+      }
+  };
+
   return (
     <main className="relative w-full h-screen bg-black overflow-hidden text-zinc-100 font-sans select-none">
       <canvas ref={canvasRef} className="block w-full h-full" />
@@ -333,8 +339,23 @@ export default function Home() {
                  <p className="text-zinc-400 text-xs uppercase mb-1">Room Code</p>
                  <p className="text-3xl font-mono font-bold tracking-widest select-all">{roomCode}</p>
                  
-                 {gameState === "LOBBY" && <p className="text-xs text-yellow-500 mt-2">Waiting for players...</p>}
-                 {gameState === "PLAYING" && <p className="text-xs text-green-500 mt-2 animate-pulse">GAME IN PROGRESS</p>}
+                 {gameState === "LOBBY" && (
+                     <div className="mt-4">
+                        <p className="text-xs text-zinc-500 mb-2">Players: {serverStateRef.current.players.length}/4</p>
+                        {serverStateRef.current.players.length >= 2 ? (
+                            <button 
+                                onClick={handleStartGame}
+                                className="w-full py-2 bg-green-600 hover:bg-green-500 rounded font-bold text-sm transition animate-pulse"
+                            >
+                                START GAME
+                            </button>
+                        ) : (
+                            <p className="text-xs text-yellow-500">Need 2+ players</p>
+                        )}
+                     </div>
+                 )}
+                 
+                 {gameState === "PLAYING" && <p className="text-xs text-green-500 mt-2">GAME IN PROGRESS</p>}
              </div>
          </div>
       )}

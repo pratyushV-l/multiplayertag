@@ -160,23 +160,35 @@ app.prepare().then(() => {
 
     socket.on("joinRoom", (code) => {
       const room = rooms.get(code);
-      if (room && room.players.size < 4) {
-        socket.join(code);
-        room.addPlayer(socket.id);
-        socket.emit("roomJoined", code);
-        
-        // Start game automatically when someone joins for now, or wait? 
-        // Let's just run it if > 1 player or force start
-        if (room.players.size >= 2 && !room.started) {
+      if (room) {
+        if (room.started) {
+             socket.emit("error", "Game already started");
+             return;
+        }
+        if (room.players.size < 4) {
+             socket.join(code);
+             room.addPlayer(socket.id);
+             socket.emit("roomJoined", code);
+             io.to(code).emit("updateState", room.getState());
+        } else {
+             socket.emit("error", "Room full");
+        }
+      } else {
+        socket.emit("error", "Room not found");
+      }
+    });
+
+    socket.on("startGame", (code) => {
+         const room = rooms.get(code);
+         if (room && !room.started && room.players.size >= 2) {
              room.startGame();
+             io.to(code).emit("gameStarted");
+             
              // Broadcast Game Loop
              room.broadcastInterval = setInterval(() => {
                 io.to(code).emit("updateState", room.getState());
              }, 1000 / 60);
-        }
-      } else {
-        socket.emit("error", "Room not found or full");
-      }
+         }
     });
 
     socket.on("input", ({ code, inputs }) => {
