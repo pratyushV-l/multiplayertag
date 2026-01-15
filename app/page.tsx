@@ -60,6 +60,7 @@ export default function Home() {
   const [inputCode, setInputCode] = useState("");
   const [myId, setMyId] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [playerCount, setPlayerCount] = useState(0);
 
   // Game Logic State (Refs for rendering)
   const serverStateRef = useRef<ServerState>({ players: [], platforms: [] });
@@ -123,6 +124,7 @@ export default function Home() {
             }
 
             serverStateRef.current = state;
+            setPlayerCount(state.players.length);
         });
 
         socket.on("error", (msg) => {
@@ -340,8 +342,8 @@ export default function Home() {
                  <p className="text-3xl font-mono font-bold tracking-widest select-all">{roomCode}</p>
                  
                  {gameState === "LOBBY" && (
-                     <div className="mt-4">
-                        <p className="text-xs text-zinc-500 mb-2">Players: {serverStateRef.current.players.length}/4</p>
+                     <div className="mt-4">playerCount}/4</p>
+                        {playerCount-2">Players: {serverStateRef.current.players.length}/4</p>
                         {serverStateRef.current.players.length >= 2 ? (
                             <button 
                                 onClick={handleStartGame}
